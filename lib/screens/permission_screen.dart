@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'home_screen.dart';
 
 class PermissionGateScreen extends StatefulWidget {
@@ -14,27 +15,9 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
   late AnimationController _controller;
   late Animation<double> _fadeIn;
   bool _checking = true;
+  int _androidVersion = 0;
 
-  // ✅ FIX 1: Removed Permission.storage (Android 13+ blocks it).
-  // Photos and Audio already cover everything the app needs.
-  final List<_PermItem> _permissions = [
-    _PermItem(
-      icon: Icons.photo_library_rounded,
-      title: 'Photos & Media',
-      desc: 'Access your photos to set as wallpaper',
-      permission: Permission.photos,
-      color: const Color(0xFFFF6B35),
-      granted: false,
-    ),
-    _PermItem(
-      icon: Icons.audio_file_rounded,
-      title: 'Audio Files',
-      desc: 'Access music files to set as ringtone',
-      permission: Permission.audio,
-      color: const Color(0xFFFFD166),
-      granted: false,
-    ),
-  ];
+  List<_PermItem> _permissions = [];
 
   @override
   void initState() {
@@ -43,15 +26,89 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
         vsync: this, duration: const Duration(milliseconds: 900));
     _fadeIn = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
     _controller.forward();
-    _checkExistingPermissions();
+    _init();
+  }
+
+  Future<void> _init() async {
+    // Detect Android version first — permissions differ per version
+    final info = await DeviceInfoPlugin().androidInfo;
+    _androidVersion = info.version.sdkInt;
+    _buildPermissionList();
+    await _checkExistingPermissions();
+  }
+
+  void _buildPermissionList() {
+    // Android 14+ (SDK 34+): READ_MEDIA_VISUAL_USER_SELECTED
+    // Android 13  (SDK 33):  READ_MEDIA_IMAGES + READ_MEDIA_AUDIO
+    // Android 12- (SDK 32-): READ_EXTERNAL_STORAGE
+    if (_androidVersion >= 34) {
+      _permissions = [
+        _PermItem(
+          icon: Icons.photo_library_rounded,
+          title: 'Photos & Media',
+          desc: 'Access your photos to set as wallpaper',
+          permissions: [Permission.photos, Permission.videos],
+          color: const Color(0xFFFF6B35),
+          granted: false,
+        ),
+        _PermItem(
+          icon: Icons.audio_file_rounded,
+          title: 'Audio Files',
+          desc: 'Access music files to set as ringtone',
+          permissions: [Permission.audio],
+          color: const Color(0xFFFFD166),
+          granted: false,
+        ),
+      ];
+    } else if (_androidVersion >= 33) {
+      _permissions = [
+        _PermItem(
+          icon: Icons.photo_library_rounded,
+          title: 'Photos & Media',
+          desc: 'Access your photos to set as wallpaper',
+          permissions: [Permission.photos],
+          color: const Color(0xFFFF6B35),
+          granted: false,
+        ),
+        _PermItem(
+          icon: Icons.audio_file_rounded,
+          title: 'Audio Files',
+          desc: 'Access music files to set as ringtone',
+          permissions: [Permission.audio],
+          color: const Color(0xFFFFD166),
+          granted: false,
+        ),
+      ];
+    } else {
+      // Android 12 and below — single storage permission covers all
+      _permissions = [
+        _PermItem(
+          icon: Icons.folder_rounded,
+          title: 'Storage Access',
+          desc: 'Access photos and audio on your device',
+          permissions: [Permission.storage],
+          color: const Color(0xFF06D6A0),
+          granted: false,
+        ),
+      ];
+    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _checkExistingPermissions() async {
+    if (_permissions.isEmpty) {
+      setState(() => _checking = false);
+      return;
+    }
     bool allGranted = true;
     for (var p in _permissions) {
-      final status = await p.permission.status;
-      if (mounted) setState(() => p.granted = status.isGranted);
-      if (!status.isGranted) allGranted = false;
+      bool itemGranted = true;
+      for (var perm in p.permissions) {
+        final status = await perm.status;
+        if (!status.isGranted) itemGranted = false;
+      }
+      if (mounted) setState(() => p.granted = itemGranted);
+      if (!itemGranted) allGranted = false;
     }
     if (allGranted && mounted) {
       _navigateHome();
@@ -62,10 +119,15 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
 
   Future<void> _requestAll() async {
     bool anyDenied = false;
+
     for (var p in _permissions) {
-      final status = await p.permission.request();
-      if (mounted) setState(() => p.granted = status.isGranted);
-      if (!status.isGranted) anyDenied = true;
+      bool itemGranted = true;
+      for (var perm in p.permissions) {
+        final status = await perm.request();
+        if (!status.isGranted) itemGranted = false;
+      }
+      if (mounted) setState(() => p.granted = itemGranted);
+      if (!itemGranted) anyDenied = true;
     }
 
     if (!anyDenied) {
@@ -92,16 +154,13 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A2E),
-        title: const Text(
-          'Permissions Required',
-          style: TextStyle(color: Colors.white),
-        ),
+        title: const Text('Permissions Required',
+            style: TextStyle(color: Colors.white)),
         content: const Text(
           'WallRing needs all permissions to work properly.\n\nPlease grant them in Settings to continue.',
           style: TextStyle(color: Colors.white70),
         ),
         actions: [
-          // ✅ FIX 2: Explicit white text on all buttons so they never go invisible
           TextButton(
             onPressed: () => Navigator.pop(context),
             style: TextButton.styleFrom(foregroundColor: Colors.grey),
@@ -110,19 +169,14 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFFF6B35),
-              foregroundColor: Colors.white, // ✅ This was missing — caused blank button
+              foregroundColor: Colors.white,
             ),
             onPressed: () {
               Navigator.pop(context);
               openAppSettings();
             },
-            child: const Text(
-              'Open Settings',
-              style: TextStyle(
-                color: Colors.white,       // ✅ Double-explicit for safety
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            child: const Text('Open Settings',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
@@ -151,14 +205,11 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
         opacity: _fadeIn,
         child: SafeArea(
           child: Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 32),
-
-                // Logo row
                 Row(
                   children: [
                     Container(
@@ -166,35 +217,29 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
                       height: 52,
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
-                          colors: [Color(0xFFFF6B35), Color(0xFFFFD166)],
-                        ),
+                            colors: [Color(0xFFFF6B35), Color(0xFFFFD166)]),
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: const Icon(Icons.wallpaper_rounded,
                           color: Colors.white, size: 28),
                     ),
                     const SizedBox(width: 14),
-                    const Text(
-                      'WallRing',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 30,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
+                    const Text('WallRing',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 30,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.5)),
                   ],
                 ),
                 const SizedBox(height: 40),
-
                 const Text(
                   'Before we start,\nwe need a few permissions.',
                   style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
-                    height: 1.3,
-                  ),
+                      color: Colors.white,
+                      fontSize: 26,
+                      fontWeight: FontWeight.w700,
+                      height: 1.3),
                 ),
                 const SizedBox(height: 10),
                 const Text(
@@ -202,12 +247,8 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
                   style: TextStyle(color: Colors.white54, fontSize: 15),
                 ),
                 const SizedBox(height: 40),
-
-                // Permission tiles
                 ..._permissions.map((p) => _buildPermTile(p)),
-
                 const Spacer(),
-
                 SizedBox(
                   width: double.infinity,
                   height: 56,
@@ -223,10 +264,9 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
                     child: const Text(
                       'Grant Permissions & Continue',
                       style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white),
                     ),
                   ),
                 ),
@@ -247,10 +287,9 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
         color: const Color(0xFF1A1A2E),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: p.granted
-              ? const Color(0xFF06D6A0).withValues(alpha: 0.5)
-              : Colors.white12,
-        ),
+            color: p.granted
+                ? const Color(0xFF06D6A0).withOpacity(0.5)
+                : Colors.white12),
       ),
       child: Row(
         children: [
@@ -258,7 +297,7 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: p.color.withValues(alpha: 0.15),
+              color: p.color.withOpacity(0.15),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(p.icon, color: p.color, size: 22),
@@ -268,20 +307,15 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  p.title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 15,
-                  ),
-                ),
+                Text(p.title,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15)),
                 const SizedBox(height: 3),
-                Text(
-                  p.desc,
-                  style:
-                      const TextStyle(color: Colors.white54, fontSize: 13),
-                ),
+                Text(p.desc,
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 13)),
               ],
             ),
           ),
@@ -289,9 +323,7 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
             p.granted
                 ? Icons.check_circle_rounded
                 : Icons.circle_outlined,
-            color: p.granted
-                ? const Color(0xFF06D6A0)
-                : Colors.white24,
+            color: p.granted ? const Color(0xFF06D6A0) : Colors.white24,
           ),
         ],
       ),
@@ -299,12 +331,11 @@ class _PermissionGateScreenState extends State<PermissionGateScreen>
   }
 }
 
-// ── Data class ─────────────────────────────────────────────────────────────────
 class _PermItem {
   final IconData icon;
   final String title;
   final String desc;
-  final Permission permission;
+  final List<Permission> permissions; // supports multiple permissions per tile
   final Color color;
   bool granted;
 
@@ -312,7 +343,7 @@ class _PermItem {
     required this.icon,
     required this.title,
     required this.desc,
-    required this.permission,
+    required this.permissions,
     required this.color,
     required this.granted,
   });

@@ -1,9 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
-import 'package:image_cropper/image_cropper.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'package:wallpaper_manager_flutter/wallpaper_manager_flutter.dart';
 
 class WallpaperScreen extends StatefulWidget {
@@ -14,11 +13,10 @@ class WallpaperScreen extends StatefulWidget {
 }
 
 class _WallpaperScreenState extends State<WallpaperScreen> {
-  final WallpaperManagerFlutter _wallpaperManager = WallpaperManagerFlutter();
-
   List<AssetEntity> _photos = [];
   AssetEntity? _selected;
   bool _loading = true;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -27,28 +25,79 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   }
 
   Future<void> _loadPhotos() async {
-    final permission = await PhotoManager.requestPermissionExtend();
-    if (!permission.isAuth) {
-      setState(() => _loading = false);
-      return;
+    try {
+      final result = await PhotoManager.requestPermissionExtend();
+
+      if (!result.isAuth && !result.hasAccess) {
+        setState(() {
+          _errorMessage =
+              'Photos permission not granted.\nGo to Settings > Apps > WallRing > Permissions and allow Photos.';
+          _loading = false;
+        });
+        return;
+      }
+
+      final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
+        type: RequestType.image,
+        hasAll: true,
+        onlyAll: false,
+        filterOption: FilterOptionGroup(
+          imageOption: const FilterOption(
+            sizeConstraint: SizeConstraint(ignoreSize: true),
+          ),
+          orders: [
+            const OrderOption(
+              type: OrderOptionType.createDate,
+              asc: false,
+            ),
+          ],
+        ),
+      );
+
+      if (albums.isEmpty) {
+        setState(() {
+          _errorMessage =
+              'No photo albums found on this device.\n\nIf you are on the emulator, you need to add photos first.\nSee instructions below.';
+          _loading = false;
+        });
+        return;
+      }
+
+      final Map<String, AssetEntity> seen = {};
+      for (final album in albums) {
+        final count = await album.assetCountAsync;
+        if (count == 0) continue;
+
+        final assets = await album.getAssetListRange(
+          start: 0,
+          end: count.clamp(0, 2000),
+        );
+
+        for (final asset in assets) {
+          seen[asset.id] = asset;
+        }
+      }
+
+      final allPhotos = seen.values.toList()
+        ..sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
+
+      setState(() {
+        _photos = allPhotos;
+        _loading = false;
+        if (allPhotos.isEmpty) {
+          _errorMessage =
+              'No photos found on this device.\n\nIf you are using the emulator, see instructions below to add test photos.';
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error loading photos: $e';
+        _loading = false;
+      });
     }
-
-    final albums = await PhotoManager.getAssetPathList(type: RequestType.image);
-    if (albums.isEmpty) {
-      setState(() => _loading = false);
-      return;
-    }
-
-    final assets = await albums[0].getAssetListRange(start: 0, end: 500);
-
-    if (!mounted) return;
-    setState(() {
-      _photos = assets;
-      _loading = false;
-    });
   }
 
-  void _onSelectPhoto(AssetEntity asset) {
+  void _onTap(AssetEntity asset) {
     setState(() => _selected = asset);
     _showPreviewBottomSheet(asset);
   }
@@ -57,7 +106,7 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
     final file = await asset.file;
     if (file == null || !mounted) return;
 
-    await showModalBottomSheet(
+    showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -75,21 +124,24 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
     try {
       _showLoadingDialog();
 
-      final result = await _wallpaperManager.setWallpaper(
+      final wallpaperManager = WallpaperManagerFlutter();
+      final result = await wallpaperManager.setWallpaper(
         imageFile,
         location,
       );
 
       if (!mounted) return;
 
-      Navigator.pop(context);
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             result
-                ? 'Wallpaper set successfully'
-                : 'Failed to set wallpaper',
+                ? '✅ Wallpaper set successfully!'
+                : '❌ Failed to set wallpaper',
           ),
           backgroundColor:
               result ? const Color(0xFF06D6A0) : Colors.redAccent,
@@ -102,7 +154,9 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
     } catch (e) {
       if (!mounted) return;
 
-      Navigator.pop(context);
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -146,18 +200,85 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
       );
     }
 
-    if (_photos.isEmpty) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.photo_library_outlined, color: Colors.white24, size: 64),
-            SizedBox(height: 16),
-            Text(
-              'No photos found',
-              style: TextStyle(color: Colors.white54, fontSize: 16),
-            ),
-          ],
+    if (_errorMessage != null || _photos.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.photo_library_outlined,
+                color: Colors.white24,
+                size: 64,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _errorMessage ?? 'No photos found',
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A2E),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: const Color(0xFFFF6B35).withOpacity(0.3),
+                  ),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '📱 How to add photos to emulator:',
+                      style: TextStyle(
+                        color: Color(0xFFFF6B35),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      '1. In Android Studio, click the 3-dot menu (⋮) on the emulator sidebar\n'
+                      '2. Click "Virtual sensors" or find the Camera icon\n'
+                      '3. OR drag and drop image files directly onto the emulator screen\n'
+                      '4. Then press the Refresh button below',
+                      style: TextStyle(
+                        color: Colors.white60,
+                        fontSize: 12,
+                        height: 1.6,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFF6B35),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Refresh Photos'),
+                onPressed: () {
+                  setState(() {
+                    _loading = true;
+                    _errorMessage = null;
+                    _photos = [];
+                  });
+                  _loadPhotos();
+                },
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -179,7 +300,7 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
               ),
               const Spacer(),
               const Text(
-                'Long press to select',
+                'Tap to preview & set',
                 style: TextStyle(
                   color: Color(0xFFFF6B35),
                   fontSize: 13,
@@ -198,15 +319,11 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
               mainAxisSpacing: 4,
             ),
             itemCount: _photos.length,
-            itemBuilder: (_, index) {
-              final asset = _photos[index];
-              return _PhotoTile(
-                asset: asset,
-                isSelected: _selected == asset,
-                onTap: () => _onSelectPhoto(asset),
-                onLongPress: () => _onSelectPhoto(asset),
-              );
-            },
+            itemBuilder: (_, i) => _PhotoTile(
+              asset: _photos[i],
+              isSelected: _selected == _photos[i],
+              onTap: () => _onTap(_photos[i]),
+            ),
           ),
         ),
       ],
@@ -218,13 +335,11 @@ class _PhotoTile extends StatefulWidget {
   final AssetEntity asset;
   final bool isSelected;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
 
   const _PhotoTile({
     required this.asset,
     required this.isSelected,
     required this.onTap,
-    required this.onLongPress,
   });
 
   @override
@@ -244,16 +359,15 @@ class _PhotoTileState extends State<_PhotoTile> {
     final data = await widget.asset.thumbnailDataWithSize(
       const ThumbnailSize(300, 300),
     );
-
-    if (!mounted) return;
-    setState(() => _thumb = data);
+    if (mounted) {
+      setState(() => _thumb = data);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: widget.onTap,
-      onLongPress: widget.onLongPress,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
@@ -265,15 +379,8 @@ class _PhotoTileState extends State<_PhotoTile> {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(6),
           child: _thumb != null
-              ? Image.memory(
-                  _thumb!,
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
-                )
-              : Container(
-                  color: const Color(0xFF1A1A2E),
-                ),
+              ? Image.memory(_thumb!, fit: BoxFit.cover)
+              : Container(color: const Color(0xFF1A1A2E)),
         ),
       ),
     );
@@ -290,7 +397,8 @@ class _WallpaperPreviewSheet extends StatefulWidget {
   });
 
   @override
-  State<_WallpaperPreviewSheet> createState() => _WallpaperPreviewSheetState();
+  State<_WallpaperPreviewSheet> createState() =>
+      _WallpaperPreviewSheetState();
 }
 
 class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
@@ -462,6 +570,7 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
+                    color: Colors.white,
                   ),
                 ),
                 onPressed: () =>
@@ -498,7 +607,7 @@ class _LocationChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
           decoration: BoxDecoration(
             color: selected
-                ? const Color(0xFFFF6B35).withValues(alpha: 0.2)
+                ? const Color(0xFFFF6B35).withOpacity(0.2)
                 : const Color(0xFF0F0F1A),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(

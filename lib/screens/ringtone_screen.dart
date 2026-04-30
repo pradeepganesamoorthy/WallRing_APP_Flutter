@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:permission_handler/permission_handler.dart'; // ADD THIS
 
 class RingtoneScreen extends StatefulWidget {
   const RingtoneScreen({super.key});
@@ -14,13 +15,12 @@ class RingtoneScreen extends StatefulWidget {
 class _RingtoneScreenState extends State<RingtoneScreen> {
   List<AssetEntity> _audios = [];
   bool _loading = true;
+  String? _errorMessage;
   AssetEntity? _playing;
-  AssetEntity? _selected;
   final AudioPlayer _player = AudioPlayer();
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
 
-  // Method channel to call native Android code for setting ringtone
   static const _channel =
       MethodChannel('com.example.wallpaper_ringtone_app/ringtone');
 
@@ -42,23 +42,135 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
   }
 
   Future<void> _loadAudio() async {
-    final albums =
-        await PhotoManager.getAssetPathList(type: RequestType.audio);
-    if (albums.isEmpty) {
-      setState(() => _loading = false);
-      return;
+    try {
+      // ✅ Request permission through photo_manager (handles Android 14)
+      final result = await PhotoManager.requestPermissionExtend();
+      if (!result.isAuth && !result.hasAccess) {
+        setState(() {
+          _errorMessage =
+              'Audio permission not granted.\nGo to Settings > Apps > WallRing > Permissions and allow Music & Audio.';
+          _loading = false;
+        });
+        return;
+      }
+
+      final albums = await PhotoManager.getAssetPathList(
+        type: RequestType.audio,
+        hasAll: true,
+        onlyAll: false,
+      );
+
+      if (albums.isEmpty) {
+        setState(() {
+          _errorMessage =
+              'No audio albums found.\n\nIf you are on the emulator, drag an MP3 file onto the emulator screen, then press Refresh.';
+          _loading = false;
+        });
+        return;
+      }
+
+      final Map<String, AssetEntity> seen = {};
+      for (final album in albums) {
+        final count = await album.assetCountAsync;
+        if (count == 0) continue;
+        final assets =
+            await album.getAssetListRange(start: 0, end: count.clamp(0, 500));
+        for (final asset in assets) {
+          seen[asset.id] = asset;
+        }
+      }
+
+      final allAudio = seen.values.toList()
+        ..sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
+
+      setState(() {
+        _audios = allAudio;
+        _loading = false;
+        if (allAudio.isEmpty) {
+          _errorMessage =
+              'No audio files found.\n\nDrag an MP3 file onto the emulator screen, then press Refresh.';
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error loading audio: $e';
+        _loading = false;
+      });
     }
-    final assets = await albums[0].getAssetListRange(start: 0, end: 300);
-    setState(() {
-      _audios = assets;
-      _loading = false;
-    });
   }
 
+  // 🔥 NEW: Check/request WRITE_SETTINGS permission
+  Future<bool> _checkSystemSettingsPermission() async {
+  try {
+    final bool granted =
+        await _channel.invokeMethod('canWriteSettings');
+
+    if (granted) {
+      return true;
+    }
+
+    if (mounted) {
+      await _showSystemSettingsDialog();
+    }
+
+    return false;
+  } catch (e) {
+    if (mounted) {
+      await _showSystemSettingsDialog();
+    }
+    return false;
+  }
+}
+
+  // 🔥 NEW: Show system settings permission dialog
+  Future<void> _showSystemSettingsDialog() async {
+  await showDialog(
+    context: context,
+    builder: (_) => AlertDialog(
+      backgroundColor: const Color(0xFF1A1A2E),
+      title: const Row(
+        children: [
+          Icon(Icons.settings_rounded, color: Color(0xFFFFD166)),
+          SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'System Permission Required',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+      content: const Text(
+        'WallRing needs "Modify system settings" permission to set ringtones.\n\n'
+        'Tap "Open Settings" and enable it for WallRing.',
+        style: TextStyle(color: Colors.white70, height: 1.5),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text(
+            'Cancel',
+            style: TextStyle(color: Colors.white54),
+          ),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFFFD166),
+            foregroundColor: Colors.black,
+          ),
+          onPressed: () async {
+            Navigator.pop(context);
+            await _channel.invokeMethod('openWriteSettings');
+          },
+          child: const Text('Open Settings'),
+        ),
+      ],
+    ),
+  );
+}
   Future<void> _playPause(AssetEntity asset) async {
     final file = await asset.file;
     if (file == null) return;
-
     if (_playing == asset) {
       await _player.pause();
       setState(() => _playing = null);
@@ -73,7 +185,6 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
   Future<void> _showSetDialog(AssetEntity asset) async {
     final file = await asset.file;
     if (file == null || !mounted) return;
-
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -88,27 +199,34 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
     );
   }
 
+  // 🔥 MODIFIED: Now checks permission BEFORE setting ringtone
   Future<void> _setRingtone(File file, String type, String title) async {
     try {
+      // Check system settings permission FIRST
+      final hasPermission = await _checkSystemSettingsPermission();
+      if (!hasPermission) {
+        return; // User cancelled or permission denied
+      }
+
       _showLoadingDialog();
-      // We use a method channel to call native Android RingtoneManager
       final result = await _channel.invokeMethod('setRingtone', {
         'path': file.path,
-        'type': type, // 'ringtone' or 'notification'
+        'type': type,
         'title': title,
       });
+      
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(result == true
                 ? '✅ ${type == 'ringtone' ? 'Phone ringtone' : 'Message tone'} set!'
-                : '❌ Failed — grant "Modify System Settings" permission'),
+                : '❌ Failed — check "Modify System Settings" permission'),
             backgroundColor:
                 result == true ? const Color(0xFF06D6A0) : Colors.orange,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             duration: const Duration(seconds: 4),
           ),
         );
@@ -118,11 +236,22 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content:
-                Text('Error: ${e.message}\n\nGo to Settings > Apps > WallRing > Modify System Settings and enable it.'),
+            content: Text(
+                'Error: ${e.message}\n\nTap "Set" again after enabling permission.'),
             backgroundColor: Colors.orange,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Unexpected error: $e'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
@@ -142,7 +271,8 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
             children: [
               CircularProgressIndicator(color: Color(0xFFFFD166)),
               SizedBox(height: 16),
-              Text('Setting tone...', style: TextStyle(color: Colors.white70)),
+              Text('Setting tone...',
+                  style: TextStyle(color: Colors.white70)),
             ],
           ),
         ),
@@ -169,16 +299,72 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
           child: CircularProgressIndicator(color: Color(0xFFFFD166)));
     }
 
-    if (_audios.isEmpty) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.music_off_rounded, color: Colors.white24, size: 64),
-            SizedBox(height: 16),
-            Text('No audio files found',
-                style: TextStyle(color: Colors.white54, fontSize: 16)),
-          ],
+    if (_errorMessage != null || _audios.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.music_off_rounded,
+                  color: Colors.white24, size: 64),
+              const SizedBox(height: 16),
+              Text(
+                _errorMessage ?? 'No audio files found',
+                style:
+                    const TextStyle(color: Colors.white54, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A2E),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: const Color(0xFFFFD166).withOpacity(0.3)),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('🎵 How to add audio to emulator:',
+                        style: TextStyle(
+                            color: Color(0xFFFFD166),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13)),
+                    SizedBox(height: 8),
+                    Text(
+                      '1. Find an MP3 file on your Mac\n'
+                      '2. Drag and drop it directly onto the emulator screen\n'
+                      '3. Press Refresh below',
+                      style: TextStyle(
+                          color: Colors.white60, fontSize: 12, height: 1.6),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFD166),
+                  foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Refresh Audio',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+                onPressed: () {
+                  setState(() {
+                    _loading = true;
+                    _errorMessage = null;
+                    _audios = [];
+                  });
+                  _loadAudio();
+                },
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -190,26 +376,20 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
           padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),
           child: Row(
             children: [
-              Text(
-                '${_audios.length} Audio Files',
-                style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500),
-              ),
+              Text('${_audios.length} Audio Files',
+                  style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500)),
               const Spacer(),
-              const Text(
-                'Tap to preview • Hold to set',
-                style: TextStyle(
-                    color: Color(0xFFFFD166),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500),
-              ),
+              const Text('Tap to preview • Hold to set',
+                  style: TextStyle(
+                      color: Color(0xFFFFD166),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500)),
             ],
           ),
         ),
-
-        // Mini player (shown when playing)
         if (_playing != null)
           _MiniPlayer(
             title: _playing!.title ?? 'Unknown',
@@ -221,7 +401,6 @@ class _RingtoneScreenState extends State<RingtoneScreen> {
             },
             formatDuration: _formatDuration,
           ),
-
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -270,10 +449,10 @@ class _MiniPlayer extends StatelessWidget {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFF2A1A0E), Color(0xFF1A2A2E)],
-        ),
+            colors: [Color(0xFF2A1A0E), Color(0xFF1A2A2E)]),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFFFD166).withOpacity(0.3)),
+        border:
+            Border.all(color: const Color(0xFFFFD166).withOpacity(0.3)),
       ),
       child: Column(
         children: [
@@ -291,20 +470,17 @@ class _MiniPlayer extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                child: Text(title,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14),
+                    overflow: TextOverflow.ellipsis),
               ),
               Text(
-                '${formatDuration(position)} / ${formatDuration(duration)}',
-                style:
-                    const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
+                  '${formatDuration(position)} / ${formatDuration(duration)}',
+                  style: const TextStyle(
+                      color: Colors.white54, fontSize: 12)),
               const SizedBox(width: 8),
               GestureDetector(
                 onTap: onStop,
@@ -319,8 +495,7 @@ class _MiniPlayer extends StatelessWidget {
             child: LinearProgressIndicator(
               value: progress.clamp(0.0, 1.0),
               backgroundColor: Colors.white12,
-              valueColor:
-                  const AlwaysStoppedAnimation(Color(0xFFFFD166)),
+              valueColor: const AlwaysStoppedAnimation(Color(0xFFFFD166)),
               minHeight: 4,
             ),
           ),
@@ -345,7 +520,7 @@ class _AudioTile extends StatelessWidget {
     required this.onLongPress,
   });
 
-  String _formatDuration(int? ms) {
+  String _fmt(int? ms) {
     if (ms == null) return '--:--';
     final d = Duration(milliseconds: ms);
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
@@ -385,12 +560,8 @@ class _AudioTile extends StatelessWidget {
                 shape: BoxShape.circle,
               ),
               child: Icon(
-                isPlaying
-                    ? Icons.pause_rounded
-                    : Icons.play_arrow_rounded,
-                color: isPlaying
-                    ? const Color(0xFFFFD166)
-                    : Colors.white54,
+                isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                color: isPlaying ? const Color(0xFFFFD166) : Colors.white54,
                 size: 22,
               ),
             ),
@@ -399,23 +570,18 @@ class _AudioTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    audio.title ?? 'Unknown',
-                    style: TextStyle(
-                      color: isPlaying
-                          ? const Color(0xFFFFD166)
-                          : Colors.white,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  Text(audio.title ?? 'Unknown',
+                      style: TextStyle(
+                          color: isPlaying
+                              ? const Color(0xFFFFD166)
+                              : Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14),
+                      overflow: TextOverflow.ellipsis),
                   const SizedBox(height: 3),
-                  Text(
-                    _formatDuration(audio.duration),
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 12),
-                  ),
+                  Text(_fmt(audio.duration),
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 12)),
                 ],
               ),
             ),
@@ -428,7 +594,7 @@ class _AudioTile extends StatelessWidget {
   }
 }
 
-// ── Ringtone Set Bottom Sheet ──────────────────────────────────────────────────
+// ── Ringtone Set Sheet ─────────────────────────────────────────────────────────
 
 class _RingtoneSetSheet extends StatelessWidget {
   final String fileName;
@@ -453,34 +619,26 @@ class _RingtoneSetSheet extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 40,
-            height: 4,
+            width: 40, height: 4,
             decoration: BoxDecoration(
-              color: Colors.white24,
-              borderRadius: BorderRadius.circular(2),
-            ),
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2)),
           ),
           const SizedBox(height: 20),
           const Icon(Icons.music_note_rounded,
               color: Color(0xFFFFD166), size: 40),
           const SizedBox(height: 12),
-          const Text(
-            'Set as...',
-            style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w700),
-          ),
+          const Text('Set as...',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
-          Text(
-            fileName,
-            style: const TextStyle(color: Colors.white54, fontSize: 13),
-            textAlign: TextAlign.center,
-            overflow: TextOverflow.ellipsis,
-          ),
+          Text(fileName,
+              style: const TextStyle(color: Colors.white54, fontSize: 13),
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis),
           const SizedBox(height: 24),
-
-          // Phone Ringtone
           _SetOptionTile(
             icon: Icons.phone_rounded,
             title: 'Phone Ringtone',
@@ -489,8 +647,6 @@ class _RingtoneSetSheet extends StatelessWidget {
             onTap: () => onSet('ringtone'),
           ),
           const SizedBox(height: 12),
-
-          // Message Tone
           _SetOptionTile(
             icon: Icons.message_rounded,
             title: 'Message Tone',
@@ -499,11 +655,10 @@ class _RingtoneSetSheet extends StatelessWidget {
             onTap: () => onSet('notification'),
           ),
           const SizedBox(height: 8),
-
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel',
-                style: TextStyle(color: Colors.white38)),
+            style: TextButton.styleFrom(foregroundColor: Colors.white38),
+            child: const Text('Cancel'),
           ),
         ],
       ),
@@ -540,12 +695,10 @@ class _SetOptionTile extends StatelessWidget {
         child: Row(
           children: [
             Container(
-              width: 44,
-              height: 44,
+              width: 44, height: 44,
               decoration: BoxDecoration(
-                color: color.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
+                  color: color.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12)),
               child: Icon(icon, color: color, size: 22),
             ),
             const SizedBox(width: 14),
