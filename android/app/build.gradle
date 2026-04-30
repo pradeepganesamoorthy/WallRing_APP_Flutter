@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace "com.example.wallpaper_ringtone_app"
+    namespace 'com.example.flutter_wallpaper_manager'
     compileSdk 36
     ndkVersion flutter.ndkVersion
 

@@ -1,9 +1,10 @@
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
-import 'package:photo_manager/photo_manager.dart';
 import 'package:image_cropper/image_cropper.dart';
-import 'package:flutter_wallpaper_manager/flutter_wallpaper_manager.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:wallpaper_manager_flutter/wallpaper_manager_flutter.dart';
 
 class WallpaperScreen extends StatefulWidget {
   const WallpaperScreen({super.key});
@@ -13,6 +14,8 @@ class WallpaperScreen extends StatefulWidget {
 }
 
 class _WallpaperScreenState extends State<WallpaperScreen> {
+  final WallpaperManagerFlutter _wallpaperManager = WallpaperManagerFlutter();
+
   List<AssetEntity> _photos = [];
   AssetEntity? _selected;
   bool _loading = true;
@@ -24,19 +27,28 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   }
 
   Future<void> _loadPhotos() async {
+    final permission = await PhotoManager.requestPermissionExtend();
+    if (!permission.isAuth) {
+      setState(() => _loading = false);
+      return;
+    }
+
     final albums = await PhotoManager.getAssetPathList(type: RequestType.image);
     if (albums.isEmpty) {
       setState(() => _loading = false);
       return;
     }
+
     final assets = await albums[0].getAssetListRange(start: 0, end: 500);
+
+    if (!mounted) return;
     setState(() {
       _photos = assets;
       _loading = false;
     });
   }
 
-  void _onLongPress(AssetEntity asset) {
+  void _onSelectPhoto(AssetEntity asset) {
     setState(() => _selected = asset);
     _showPreviewBottomSheet(asset);
   }
@@ -45,7 +57,7 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
     final file = await asset.file;
     if (file == null || !mounted) return;
 
-    showModalBottomSheet(
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -62,36 +74,43 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   Future<void> _setWallpaper(File imageFile, int location) async {
     try {
       _showLoadingDialog();
-      final result = await WallpaperManager.setWallpaperFromFile(
-        imageFile.path,
+
+      final result = await _wallpaperManager.setWallpaper(
+        imageFile,
         location,
       );
-      if (mounted) {
-        Navigator.pop(context); // close loading
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result
-                ? '✅ Wallpaper set successfully!'
-                : '❌ Failed to set wallpaper'),
-            backgroundColor:
-                result ? const Color(0xFF06D6A0) : Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+
+      if (!mounted) return;
+
+      Navigator.pop(context);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result
+                ? 'Wallpaper set successfully'
+                : 'Failed to set wallpaper',
           ),
-        );
-      }
+          backgroundColor:
+              result ? const Color(0xFF06D6A0) : Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      );
     } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
+      if (!mounted) return;
+
+      Navigator.pop(context);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -108,8 +127,10 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
             children: [
               CircularProgressIndicator(color: Color(0xFFFF6B35)),
               SizedBox(height: 16),
-              Text('Setting wallpaper...',
-                  style: TextStyle(color: Colors.white70)),
+              Text(
+                'Setting wallpaper...',
+                style: TextStyle(color: Colors.white70),
+              ),
             ],
           ),
         ),
@@ -121,7 +142,8 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   Widget build(BuildContext context) {
     if (_loading) {
       return const Center(
-          child: CircularProgressIndicator(color: Color(0xFFFF6B35)));
+        child: CircularProgressIndicator(color: Color(0xFFFF6B35)),
+      );
     }
 
     if (_photos.isEmpty) {
@@ -131,8 +153,10 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
           children: [
             Icon(Icons.photo_library_outlined, color: Colors.white24, size: 64),
             SizedBox(height: 16),
-            Text('No photos found',
-                style: TextStyle(color: Colors.white54, fontSize: 16)),
+            Text(
+              'No photos found',
+              style: TextStyle(color: Colors.white54, fontSize: 16),
+            ),
           ],
         ),
       );
@@ -148,17 +172,19 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
               Text(
                 '${_photos.length} Photos',
                 style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500),
+                  color: Colors.white54,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
               const Spacer(),
               const Text(
                 'Long press to select',
                 style: TextStyle(
-                    color: Color(0xFFFF6B35),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500),
+                  color: Color(0xFFFF6B35),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ],
           ),
@@ -172,12 +198,15 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
               mainAxisSpacing: 4,
             ),
             itemCount: _photos.length,
-            itemBuilder: (_, i) => _PhotoTile(
-              asset: _photos[i],
-              isSelected: _selected == _photos[i],
-              onLongPress: () => _onLongPress(_photos[i]),
-              onTap: () => _onLongPress(_photos[i]),
-            ),
+            itemBuilder: (_, index) {
+              final asset = _photos[index];
+              return _PhotoTile(
+                asset: asset,
+                isSelected: _selected == asset,
+                onTap: () => _onSelectPhoto(asset),
+                onLongPress: () => _onSelectPhoto(asset),
+              );
+            },
           ),
         ),
       ],
@@ -185,19 +214,17 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   }
 }
 
-// ── Individual photo tile ──────────────────────────────────────────────────────
-
 class _PhotoTile extends StatefulWidget {
   final AssetEntity asset;
   final bool isSelected;
-  final VoidCallback onLongPress;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   const _PhotoTile({
     required this.asset,
     required this.isSelected,
-    required this.onLongPress,
     required this.onTap,
+    required this.onLongPress,
   });
 
   @override
@@ -217,7 +244,9 @@ class _PhotoTileState extends State<_PhotoTile> {
     final data = await widget.asset.thumbnailDataWithSize(
       const ThumbnailSize(300, 300),
     );
-    if (mounted) setState(() => _thumb = data);
+
+    if (!mounted) return;
+    setState(() => _thumb = data);
   }
 
   @override
@@ -236,15 +265,20 @@ class _PhotoTileState extends State<_PhotoTile> {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(6),
           child: _thumb != null
-              ? Image.memory(_thumb!, fit: BoxFit.cover)
-              : Container(color: const Color(0xFF1A1A2E)),
+              ? Image.memory(
+                  _thumb!,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                )
+              : Container(
+                  color: const Color(0xFF1A1A2E),
+                ),
         ),
       ),
     );
   }
 }
-
-// ── Preview Bottom Sheet ───────────────────────────────────────────────────────
 
 class _WallpaperPreviewSheet extends StatefulWidget {
   final File imageFile;
@@ -261,7 +295,7 @@ class _WallpaperPreviewSheet extends StatefulWidget {
 
 class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
   File? _croppedFile;
-  int _wallpaperLocation = WallpaperManager.BOTH_SCREEN;
+  int _wallpaperLocation = WallpaperManagerFlutter.bothScreens;
 
   File get _displayFile => _croppedFile ?? widget.imageFile;
 
@@ -280,6 +314,7 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
         ),
       ],
     );
+
     if (cropped != null) {
       setState(() => _croppedFile = File(cropped.path));
     }
@@ -297,7 +332,6 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
       ),
       child: Column(
         children: [
-          // Handle
           const SizedBox(height: 12),
           Container(
             width: 40,
@@ -308,18 +342,15 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // Title
           const Text(
             'Preview & Set Wallpaper',
             style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w700),
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 16),
-
-          // Image Preview
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -334,65 +365,76 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // Crop Button
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor: const Color(0xFFFFD166),
-                side: const BorderSide(color: Color(0xFFFFD166), width: 1.5),
+                side: const BorderSide(
+                  color: Color(0xFFFFD166),
+                  width: 1.5,
+                ),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
                 minimumSize: const Size(double.infinity, 46),
               ),
               icon: const Icon(Icons.crop_rounded, size: 18),
-              label: const Text('Crop Image',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
+              label: const Text(
+                'Crop Image',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
               onPressed: _cropImage,
             ),
           ),
           const SizedBox(height: 12),
-
-          // Wallpaper Location Selector
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Set as:',
-                    style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600)),
+                const Text(
+                  'Set as:',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
                     _LocationChip(
                       label: 'Home Screen',
                       icon: Icons.home_rounded,
-                      selected:
-                          _wallpaperLocation == WallpaperManager.HOME_SCREEN,
-                      onTap: () => setState(() => _wallpaperLocation =
-                          WallpaperManager.HOME_SCREEN),
+                      selected: _wallpaperLocation ==
+                          WallpaperManagerFlutter.homeScreen,
+                      onTap: () => setState(
+                        () => _wallpaperLocation =
+                            WallpaperManagerFlutter.homeScreen,
+                      ),
                     ),
                     const SizedBox(width: 8),
                     _LocationChip(
                       label: 'Lock Screen',
                       icon: Icons.lock_rounded,
-                      selected:
-                          _wallpaperLocation == WallpaperManager.LOCK_SCREEN,
-                      onTap: () => setState(() => _wallpaperLocation =
-                          WallpaperManager.LOCK_SCREEN),
+                      selected: _wallpaperLocation ==
+                          WallpaperManagerFlutter.lockScreen,
+                      onTap: () => setState(
+                        () => _wallpaperLocation =
+                            WallpaperManagerFlutter.lockScreen,
+                      ),
                     ),
                     const SizedBox(width: 8),
                     _LocationChip(
                       label: 'Both',
                       icon: Icons.phonelink_rounded,
-                      selected:
-                          _wallpaperLocation == WallpaperManager.BOTH_SCREEN,
-                      onTap: () => setState(() =>
-                          _wallpaperLocation = WallpaperManager.BOTH_SCREEN),
+                      selected: _wallpaperLocation ==
+                          WallpaperManagerFlutter.bothScreens,
+                      onTap: () => setState(
+                        () => _wallpaperLocation =
+                            WallpaperManagerFlutter.bothScreens,
+                      ),
                     ),
                   ],
                 ),
@@ -400,8 +442,6 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
             ),
           ),
           const SizedBox(height: 12),
-
-          // Apply Button
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
             child: SizedBox(
@@ -412,13 +452,18 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
                   backgroundColor: const Color(0xFFFF6B35),
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                   elevation: 0,
                 ),
                 icon: const Icon(Icons.check_rounded),
-                label: const Text('Apply Wallpaper',
-                    style: TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w700)),
+                label: const Text(
+                  'Apply Wallpaper',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 onPressed: () =>
                     widget.onSetWallpaper(_displayFile, _wallpaperLocation),
               ),
@@ -429,8 +474,6 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
     );
   }
 }
-
-// ── Location Chip ──────────────────────────────────────────────────────────────
 
 class _LocationChip extends StatelessWidget {
   final String label;
@@ -452,33 +495,34 @@ class _LocationChip extends StatelessWidget {
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          padding:
-              const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
           decoration: BoxDecoration(
             color: selected
-                ? const Color(0xFFFF6B35).withOpacity(0.2)
+                ? const Color(0xFFFF6B35).withValues(alpha: 0.2)
                 : const Color(0xFF0F0F1A),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color:
-                  selected ? const Color(0xFFFF6B35) : Colors.white12,
+              color: selected ? const Color(0xFFFF6B35) : Colors.white12,
               width: 1.5,
             ),
           ),
           child: Column(
             children: [
-              Icon(icon,
-                  color: selected
-                      ? const Color(0xFFFF6B35)
-                      : Colors.white38,
-                  size: 18),
+              Icon(
+                icon,
+                color: selected
+                    ? const Color(0xFFFF6B35)
+                    : Colors.white38,
+                size: 18,
+              ),
               const SizedBox(height: 4),
               Text(
                 label,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  color:
-                      selected ? const Color(0xFFFF6B35) : Colors.white38,
+                  color: selected
+                      ? const Color(0xFFFF6B35)
+                      : Colors.white38,
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                 ),

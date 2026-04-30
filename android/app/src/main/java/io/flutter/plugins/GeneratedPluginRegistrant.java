@@ -41,11 +41,6 @@ public final class GeneratedPluginRegistrant {
       Log.e(TAG, "Error registering plugin flutter_plugin_android_lifecycle, io.flutter.plugins.flutter_plugin_android_lifecycle.FlutterAndroidLifecyclePlugin", e);
     }
     try {
-      flutterEngine.getPlugins().add(new com.pk.wallpapermanager.flutter_wallpaper_manager.FlutterWallpaperManagerPlugin());
-    } catch (Exception e) {
-      Log.e(TAG, "Error registering plugin flutter_wallpaper_manager, com.pk.wallpapermanager.flutter_wallpaper_manager.FlutterWallpaperManagerPlugin", e);
-    }
-    try {
       flutterEngine.getPlugins().add(new vn.hunghd.flutter.plugins.imagecropper.ImageCropperPlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin image_cropper, vn.hunghd.flutter.plugins.imagecropper.ImageCropperPlugin", e);
