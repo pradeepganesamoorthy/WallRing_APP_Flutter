@@ -1,0 +1,27 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+
+# Android / iOS generated
+android/.gradle/
+android/app/build/
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/.last_build_id/
+
+# macOS junk
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Outputs
+*.apk
+*.aab
+*.ipa
