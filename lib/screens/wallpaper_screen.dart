@@ -18,6 +18,8 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   bool _loading = true;
   String? _errorMessage;
 
+  final WallpaperManagerFlutter _wallpaperManager = WallpaperManagerFlutter();
+
   @override
   void initState() {
     super.initState();
@@ -27,7 +29,6 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   Future<void> _loadPhotos() async {
     try {
       final result = await PhotoManager.requestPermissionExtend();
-
       if (!result.isAuth && !result.hasAccess) {
         setState(() {
           _errorMessage =
@@ -46,10 +47,7 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
             sizeConstraint: SizeConstraint(ignoreSize: true),
           ),
           orders: [
-            const OrderOption(
-              type: OrderOptionType.createDate,
-              asc: false,
-            ),
+            const OrderOption(type: OrderOptionType.createDate, asc: false),
           ],
         ),
       );
@@ -57,7 +55,7 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
       if (albums.isEmpty) {
         setState(() {
           _errorMessage =
-              'No photo albums found on this device.\n\nIf you are on the emulator, you need to add photos first.\nSee instructions below.';
+              'No photo albums found.\n\nDrag image files onto the emulator screen, then press Refresh.';
           _loading = false;
         });
         return;
@@ -67,12 +65,8 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
       for (final album in albums) {
         final count = await album.assetCountAsync;
         if (count == 0) continue;
-
-        final assets = await album.getAssetListRange(
-          start: 0,
-          end: count.clamp(0, 2000),
-        );
-
+        final assets =
+            await album.getAssetListRange(start: 0, end: count.clamp(0, 2000));
         for (final asset in assets) {
           seen[asset.id] = asset;
         }
@@ -86,7 +80,7 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
         _loading = false;
         if (allPhotos.isEmpty) {
           _errorMessage =
-              'No photos found on this device.\n\nIf you are using the emulator, see instructions below to add test photos.';
+              'No photos found. Drag image files onto the emulator, then press Refresh.';
         }
       });
     } catch (e) {
@@ -123,48 +117,40 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
   Future<void> _setWallpaper(File imageFile, int location) async {
     try {
       _showLoadingDialog();
-
-      final wallpaperManager = WallpaperManagerFlutter();
-      final result = await wallpaperManager.setWallpaper(
+      final result = await _wallpaperManager.setWallpaper(
         imageFile,
         location,
       );
 
-      if (!mounted) return;
-
-      if (Navigator.canPop(context)) {
+      if (mounted) {
         Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              result
+                  ? '✅ Wallpaper set successfully!'
+                  : '❌ Failed to set wallpaper',
+            ),
+            backgroundColor:
+                result ? const Color(0xFF06D6A0) : Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        );
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            result
-                ? '✅ Wallpaper set successfully!'
-                : '❌ Failed to set wallpaper',
-          ),
-          backgroundColor:
-              result ? const Color(0xFF06D6A0) : Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      );
     } catch (e) {
-      if (!mounted) return;
-
-      if (Navigator.canPop(context)) {
+      if (mounted) {
         Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
     }
   }
 
@@ -215,10 +201,7 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
               const SizedBox(height: 16),
               Text(
                 _errorMessage ?? 'No photos found',
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 14,
-                ),
+                style: const TextStyle(color: Colors.white54, fontSize: 14),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 24),
@@ -244,10 +227,9 @@ class _WallpaperScreenState extends State<WallpaperScreen> {
                     ),
                     SizedBox(height: 8),
                     Text(
-                      '1. In Android Studio, click the 3-dot menu (⋮) on the emulator sidebar\n'
-                      '2. Click "Virtual sensors" or find the Camera icon\n'
-                      '3. OR drag and drop image files directly onto the emulator screen\n'
-                      '4. Then press the Refresh button below',
+                      '1. Find any image file on your Mac\n'
+                      '2. Drag and drop it onto the emulator screen\n'
+                      '3. Press Refresh below',
                       style: TextStyle(
                         color: Colors.white60,
                         fontSize: 12,
@@ -408,32 +390,68 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
   File get _displayFile => _croppedFile ?? widget.imageFile;
 
   Future<void> _cropImage() async {
-    final cropped = await ImageCropper().cropImage(
-      sourcePath: widget.imageFile.path,
-      uiSettings: [
-        AndroidUiSettings(
-          toolbarTitle: 'Crop Wallpaper',
-          toolbarColor: const Color(0xFF1A1A2E),
-          toolbarWidgetColor: Colors.white,
-          activeControlsWidgetColor: const Color(0xFFFF6B35),
-          backgroundColor: const Color(0xFF0F0F1A),
-          initAspectRatio: CropAspectRatioPreset.original,
-          lockAspectRatio: false,
-        ),
-      ],
-    );
+    try {
+      final cropped = await ImageCropper().cropImage(
+        sourcePath: _displayFile.path,
+        compressFormat: ImageCompressFormat.jpg,
+        compressQuality: 95,
+        uiSettings: [
+          AndroidUiSettings(
+            toolbarTitle: 'Crop Wallpaper',
+            toolbarColor: const Color(0xFF1A1A2E),
+            toolbarWidgetColor: Colors.white,
+            activeControlsWidgetColor: const Color(0xFFFF6B35),
+            backgroundColor: const Color(0xFF0F0F1A),
+            statusBarColor: const Color(0xFF0F0F1A),
+            initAspectRatio: CropAspectRatioPreset.original,
+            lockAspectRatio: false,
+            hideBottomControls: false,
+            aspectRatioPresets: [
+              CropAspectRatioPreset.original,
+              CropAspectRatioPreset.square,
+              CropAspectRatioPreset.ratio16x9,
+              CropAspectRatioPreset.ratio4x3,
+              CropAspectRatioPreset.ratio3x2,
+            ],
+          ),
+        ],
+      );
 
-    if (cropped != null) {
-      setState(() => _croppedFile = File(cropped.path));
+      if (cropped != null && mounted) {
+        setState(() => _croppedFile = File(cropped.path));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✂️ Crop applied! Tap Apply Wallpaper to set it.'),
+            backgroundColor: Color(0xFF06D6A0),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Crop error: $e'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
+  }
+
+  void _resetCrop() {
+    setState(() => _croppedFile = null);
   }
 
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
+    final isCropped = _croppedFile != null;
 
     return Container(
-      height: size.height * 0.88,
+      height: size.height * 0.92,
       decoration: const BoxDecoration(
         color: Color(0xFF1A1A2E),
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -449,53 +467,136 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const SizedBox(height: 16),
-          const Text(
-            'Preview & Set Wallpaper',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
+          const SizedBox(height: 14),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                const Text(
+                  'Preview & Set Wallpaper',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                if (isCropped)
+                  GestureDetector(
+                    onTap: _resetCrop,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(
+                            Icons.refresh_rounded,
+                            color: Colors.white54,
+                            size: 14,
+                          ),
+                          SizedBox(width: 4),
+                          Text(
+                            'Reset',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Image.file(
-                  _displayFile,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
+              child: Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image.file(
+                      _displayFile,
+                      width: double.infinity,
+                      height: double.infinity,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  if (isCropped)
+                    Positioned(
+                      top: 10,
+                      right: 10,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF06D6A0),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(
+                              Icons.check_rounded,
+                              color: Colors.white,
+                              size: 14,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'Cropped',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20),
+            child: Text(
+              'The image fills the screen. Use Crop to select exactly what area to show.',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 12),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor: const Color(0xFFFFD166),
-                side: const BorderSide(
-                  color: Color(0xFFFFD166),
-                  width: 1.5,
-                ),
+                side: const BorderSide(color: Color(0xFFFFD166), width: 1.5),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
                 minimumSize: const Size(double.infinity, 46),
               ),
               icon: const Icon(Icons.crop_rounded, size: 18),
-              label: const Text(
-                'Crop Image',
-                style: TextStyle(fontWeight: FontWeight.w600),
+              label: Text(
+                isCropped ? 'Crop Again' : 'Crop Image',
+                style: const TextStyle(fontWeight: FontWeight.w600),
               ),
               onPressed: _cropImage,
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Column(
@@ -513,7 +614,7 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
                 Row(
                   children: [
                     _LocationChip(
-                      label: 'Home Screen',
+                      label: 'Home\nScreen',
                       icon: Icons.home_rounded,
                       selected: _wallpaperLocation ==
                           WallpaperManagerFlutter.homeScreen,
@@ -524,7 +625,7 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
                     ),
                     const SizedBox(width: 8),
                     _LocationChip(
-                      label: 'Lock Screen',
+                      label: 'Lock\nScreen',
                       icon: Icons.lock_rounded,
                       selected: _wallpaperLocation ==
                           WallpaperManagerFlutter.lockScreen,
@@ -535,7 +636,7 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
                     ),
                     const SizedBox(width: 8),
                     _LocationChip(
-                      label: 'Both',
+                      label: 'Both\nScreens',
                       icon: Icons.phonelink_rounded,
                       selected: _wallpaperLocation ==
                           WallpaperManagerFlutter.bothScreens,
@@ -551,7 +652,7 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
           ),
           const SizedBox(height: 12),
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
             child: SizedBox(
               width: double.infinity,
               height: 52,
@@ -564,7 +665,7 @@ class _WallpaperPreviewSheetState extends State<_WallpaperPreviewSheet> {
                   ),
                   elevation: 0,
                 ),
-                icon: const Icon(Icons.check_rounded),
+                icon: const Icon(Icons.check_rounded, color: Colors.white),
                 label: const Text(
                   'Apply Wallpaper',
                   style: TextStyle(
@@ -619,9 +720,7 @@ class _LocationChip extends StatelessWidget {
             children: [
               Icon(
                 icon,
-                color: selected
-                    ? const Color(0xFFFF6B35)
-                    : Colors.white38,
+                color: selected ? const Color(0xFFFF6B35) : Colors.white38,
                 size: 18,
               ),
               const SizedBox(height: 4),
